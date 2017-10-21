@@ -291,7 +291,7 @@ convert (int &id, std::string symbol, string direction,
 }
 void
 add_request (int &id, std::string symbol, string direction, int price,
-       int size, Connection conn, unordered_map<int, PortfolioItem*>& id_to_before_ack)
+       int size, Connection conn, unordered_map<int, PortfolioItem*>& id_to_before_ack, vector<int>& outstanding_inventory)
 {
   id++;
 
@@ -307,18 +307,104 @@ add_request (int &id, std::string symbol, string direction, int price,
   request.push_back (direction);
   request.push_back (std::to_string (price));
   request.push_back (std::to_string (size));
+  if(direction == "SELL") {
+    outstanding_inventory[symbol_to_int(symbol)] -= size;
+  } else outstanding_inventory[symbol_to_int(symbol)] += size;
+
   conn.send_to_exchange (join (" ", request));
 }
-
-
-  
-
 
 void
 cancel_request (int &id, Connection conn)
 {
   std::string request = "CANCEL " + std::to_string (id);
   conn.send_to_exchange (request);
+}
+
+void process_stock(vector<string> split_message, int sell_index, int& bond_sell, int& gs_sell, int& ms_sell, int& wfc_sell, vector<int> inventory, vector<int> outstanding_inventory, unordered_map<int, PortfolioItem*>& id_to_item_before_ack, int& global_id, Connection conn) {
+
+      string symbol = split_message[1];
+      int symbol_int = symbol_to_int(symbol);
+      //for (int i = 3; i < sell_index; i++) {
+      for(int i = 3; i < 4; i++) {
+        vector < string > price_size = split (split_message[i], ":");
+        int price = stoi (price_size[0]);
+        int size = stoi (price_size[1]);
+
+        if(symbol == "BOND") {
+          if(bond_sell > 0) {
+            add_request(global_id, "BOND", "SELL", price, min(bond_sell, size), conn, id_to_item_before_ack, outstanding_inventory);
+            bond_sell -= min(bond_sell, size);
+          }
+        }
+
+
+        if(symbol == "GS") {
+          if(gs_sell > 0) {
+            add_request(global_id, "GS", "SELL", price, min(gs_sell, size), conn, id_to_item_before_ack, outstanding_inventory);
+            gs_sell -= min(gs_sell, size);
+          }
+        }
+
+
+        if(symbol == "MS") {
+          if(ms_sell > 0) {
+            add_request(global_id, "MS", "SELL", price, min(ms_sell, size), conn, id_to_item_before_ack, outstanding_inventory);
+            ms_sell -= min(ms_sell, size);
+          }
+        }
+
+
+        if(symbol == "WFC") {
+          if(wfc_sell > 0) {
+            add_request(global_id, "WFC", "SELL", price, min(wfc_sell, size), conn, id_to_item_before_ack, outstanding_inventory);
+            wfc_sell -= min(wfc_sell, size);
+          }
+        }
+
+        }
+
+      for (int i = sell_index + 1; i < sell_index+2; i++) {
+//      for (int i = sell_index + 1; i < split_message.size(); i++) {
+        if(i == split_message.size()) {break;}
+        vector < string > price_size = split (split_message[i], ":");
+        int price = stoi (price_size[0]);
+        int size = stoi (price_size[1]);
+
+
+        if(symbol == "BOND") {
+          if(bond_sell < 0) {
+            add_request(global_id, "BOND", "BUY", price, min(-bond_sell, size), conn, id_to_item_before_ack, outstanding_inventory);
+            bond_sell += min(-bond_sell, size);
+          }
+        }
+
+
+        if(symbol == "GS") {
+          if(gs_sell < 0) {
+            add_request(global_id, "GS", "BUY", price, min(-gs_sell, size), conn, id_to_item_before_ack, outstanding_inventory);
+            gs_sell += min(-gs_sell, size);
+          }
+        }
+
+
+        if(symbol == "MS") {
+          if(ms_sell < 0) {
+            add_request(global_id, "MS", "BUY", price, min(-ms_sell, size), conn, id_to_item_before_ack, outstanding_inventory);
+            ms_sell += min(-ms_sell, size);
+          }
+        }
+
+
+        if(symbol == "WFC") {
+          if(wfc_sell < 0) {
+            add_request(global_id, "WFC", "BUY", price, min(-wfc_sell, size), conn, id_to_item_before_ack, outstanding_inventory);
+            wfc_sell += min(-wfc_sell, size);
+          }
+        }
+
+
+      }
 }
 
 void
@@ -340,40 +426,63 @@ main_loop (Connection conn) {
   int GS_avg = -1;
   int MS_avg = -1;
   int WFC_avg = -1;
+  int BOND_avg = -1;
+
+  int bond_sell = 0;
+  int gs_sell = 0;
+  int ms_sell = 0;
+  int wfc_sell = 0;
 
   
+  int xlf_count = 0;
 
-  std::vector < int >inventory(8);
+  std::vector <int> inventory(8);
+  std::vector <int> outstanding_inventory(8);
   std::unordered_map < int, PortfolioItem* > id_to_item_before_ack; //id to PortfolioItem
-  std::unordered_map < int, PortfolioItem* > id_to_item_outstanding; //id to PortfolioItem
-
-  
+  std::unordered_map < int, PortfolioItem* > id_to_item_outstanding; //id to PortfolioItem 
 
   while (true) {
-  bool greedy_sell_xlf = false;
-  if(inventory[XLF] > 70) {
-    greedy_sell_xlf = true;
+  if(inventory[XLF] > 50) {
     cout << "WE WILL TRY TO CONVERT " << endl;
-    convert(global_id, "XLF", "SELL", 20, conn, id_to_item_before_ack);
+    convert(global_id, "XLF", "SELL", 50, conn, id_to_item_before_ack);
   }
 
-  bool greedy_buy_xlf = false;
-  if(inventory[XLF] == -100) {
-    greedy_buy_xlf = true;
+  if(inventory[XLF] < -50) {
     cout << "WE WILL TRY TO CONVERT " << endl;
-    convert(global_id, "XLF", "BUY", 20, conn, id_to_item_before_ack);
+    convert(global_id, "XLF", "BUY", 50, conn, id_to_item_before_ack);
   }
+
+
+  if(xlf_count >= 10) {
+    int num = xlf_count/10;
+    xlf_count -= num*10;
+
+    bond_sell += 3*num;
+    gs_sell += 2*num;
+    ms_sell += 3*num;
+    wfc_sell += 2*num;
+  } 
+  if(xlf_count <= -10) {
+    int num = xlf_count/10;
+    xlf_count -= num*10;
+
+    bond_sell += 3*num;
+    gs_sell += 2*num;
+    ms_sell += 3*num;
+    wfc_sell += 2*num; 
+  }
+
 
     for(const auto x: inventory) {cout << x << " ";}
     cout << endl;
     std::string message = conn.read_from_exchange ();
-   // cout << message << endl;
     vector < string > split_message = split (message, " ");
     if(split_message[0] == "ACK") {
       int id = stoi(split_message[1]);    
       if(id_to_item_before_ack.find(id) != id_to_item_before_ack.end()) {
         id_to_item_outstanding[id] = id_to_item_before_ack[id];
         PortfolioItem* item = id_to_item_before_ack[id];
+
         if(item->symbol == XLF && item->convert) {
           int size = item->size;
           if(item->direction) {
@@ -389,6 +498,11 @@ main_loop (Connection conn) {
             inventory[MS] -= 3*(size/10);
             inventory[WFC] -= 2*(size/10);
           }
+          if(item->direction) {
+            outstanding_inventory[item->symbol] += size;
+          } else {
+            outstanding_inventory[item->symbol] -= size;
+          }
         }
       } else {
         cout << "ID_TO_ITEM DOES NOT CONTAIN THIS ID " << id << endl;
@@ -402,12 +516,21 @@ main_loop (Connection conn) {
       int price = stoi(split_message[4]); 
       int size = stoi(split_message[5]);
 
+      if(symbol == "XLF") {
+        if(direction) {
+          xlf_count -= size;
+        } else {
+          xlf_count += size;
+        }
+      }
 
       if(!direction) {
         inventory[symbol_to_int(symbol)] += size;
+        outstanding_inventory[symbol_to_int(symbol)] -= size;
         inventory[symbol_to_int("USD")] -= size*price;
       } else {
         inventory[symbol_to_int(symbol)] -= size;
+        outstanding_inventory[symbol_to_int(symbol)] += size;
         inventory[symbol_to_int("USD")] += size*price;
       }
       
@@ -426,7 +549,7 @@ main_loop (Connection conn) {
     }
 
     if(split_message[0] == "HELLO") {
-      for(int i = 0; i < 7; i++) {
+      for(int i = 0; i < 8; i++) {
         auto item_num = split(split_message[i+1], ":");
         inventory[i] = stoi(item_num[1]);
       }
@@ -441,52 +564,10 @@ main_loop (Connection conn) {
         }
       }
 
-      if (split_message[1] == "BOND") {
-        for (int i = 3; i < sell_index; i++) {
-          vector < string > price_size = split (split_message[i], ":");
-          int price = stoi (price_size[0]);
-          int size = stoi (price_size[1]);
-          if (greedy_sell_xlf && inventory[BOND] > 0) {
-            add_request (global_id, "BOND", "SELL", price, min(inventory[BOND], size), conn, id_to_item_before_ack);
-            cout << " WE SELL A BOND" << "\n";
-          }
-        }
-        for (int i = sell_index + 1; i < split_message.size (); i++) {
-          vector < string > price_size = split (split_message[i], ":");
-          int price = stoi (price_size[0]);
-          int size = stoi (price_size[1]);
-          if (greedy_buy_xlf && inventory[BOND] < 0) {
-          add_request (global_id, "BOND", "BUY", price, min(-inventory[BOND], size), conn, id_to_item_before_ack);
-          cout << " WE BUY A BOND" << " " << price << " " << size << endl;
-        }
-      }
-    
+      if(split_message[1] == "BOND" || split_message[1] == "GS" || split_message[1] == "MS" || split_message[1] == "WCF"){
+      process_stock(split_message, sell_index, bond_sell, gs_sell, ms_sell, wfc_sell, inventory, outstanding_inventory, id_to_item_before_ack, global_id, conn);}
 
-  if (split_message[1] == "VALBZ") {
-    int bid, offer;
-    VALBZ_avg = -1;
-    bool VALBZ_buy_empty = split_message[3] == "SELL";
-    if(!VALBZ_buy_empty) { 
-      vector<string> buy_price_size = split(split_message[3], ":");
-      int price = stoi(buy_price_size[0]);
-      bid = price;
-      int size = stoi(buy_price_size[1]);
-    }
 
-    bool VALBZ_sell_empty = split_message[split_message.size()-1] == "SELL";
-    if(!VALBZ_sell_empty) {
-      vector<string> buy_price_size = split(split_message[sell_index+1], ":");
-      int price = stoi(buy_price_size[0]);
-      offer = price;
-      int size = stoi(buy_price_size[1]); 
-    }
-
-    if(!VALBZ_buy_empty && !VALBZ_sell_empty) {
-      VALBZ_avg = (bid+offer)/2;
-    } else cout << "price not found" << endl;
-  }
-
-  
   if (split_message[1] == "GS") {
     int bid, offer;
     GS_avg = -1;
@@ -510,15 +591,6 @@ main_loop (Connection conn) {
       GS_avg = (bid+offer)/2;
     } else cout << "price not found" << endl;
 
-
-        for (int i = 3; i < sell_index; i++) {
-          vector < string > price_size = split (split_message[i], ":");
-          int price = stoi (price_size[0]);
-          int size = stoi (price_size[1]);
-          if (greedy_sell_xlf && inventory[GS] > 0) {
-        if(inventory[GS] > 0) {  
-            add_request (global_id, "GS", "SELL", price, min(inventory[GS], size), conn, id_to_item_before_ack);}
-        }
   }
 
 
@@ -545,15 +617,6 @@ main_loop (Connection conn) {
       MS_avg = (bid+offer)/2;
     } else cout << "price not found" << endl;
 
-
-        for (int i = 3; i < sell_index; i++) {
-          vector < string > price_size = split (split_message[i], ":");
-          int price = stoi (price_size[0]);
-          int size = stoi (price_size[1]);
-        if (inventory[MS] > 0) {
-            add_request (global_id, "MS", "SELL", price, min(inventory[MS], size), conn, id_to_item_before_ack);
-         }
-        }
   }
 
 
@@ -580,15 +643,32 @@ main_loop (Connection conn) {
       WFC_avg = (bid+offer)/2;
     } else cout << "price not found" << endl;
 
+  }
 
-        for (int i = 3; i < sell_index; i++) {
-          vector < string > price_size = split (split_message[i], ":");
-          int price = stoi (price_size[0]);
-          int size = stoi (price_size[1]);
-           if (inventory[WFC] > 0) {
-            add_request (global_id, "WFC", "SELL", price, min(inventory[WFC], size), conn, id_to_item_before_ack);
+
+
+  if (split_message[1] == "VALBZ") {
+    int bid, offer;
+    VALBZ_avg = -1;
+    bool VALBZ_buy_empty = split_message[3] == "SELL";
+    if(!VALBZ_buy_empty) { 
+      vector<string> buy_price_size = split(split_message[3], ":");
+      int price = stoi(buy_price_size[0]);
+      bid = price;
+      int size = stoi(buy_price_size[1]);
     }
-        }
+
+    bool VALBZ_sell_empty = split_message[split_message.size()-1] == "SELL";
+    if(!VALBZ_sell_empty) {
+      vector<string> buy_price_size = split(split_message[sell_index+1], ":");
+      int price = stoi(buy_price_size[0]);
+      offer = price;
+      int size = stoi(buy_price_size[1]); 
+    }
+
+    if(!VALBZ_buy_empty && !VALBZ_sell_empty) {
+      VALBZ_avg = (bid+offer)/2;
+    } else cout << "price not found" << endl;
   }
 
 
@@ -603,7 +683,7 @@ main_loop (Connection conn) {
       int price = stoi(price_size[0]);
       int size = stoi(price_size[1]);
 
-      int spread = 10;
+      int spread = 20;
      
 /*
       if(inventory[XLF] < -50) {spread = 20;}
@@ -611,7 +691,7 @@ main_loop (Connection conn) {
       if(inventory[XLF] < -90) {spread = 50;}*/
 
       if (price > XLF_estimate + spread) {
-        add_request(global_id, "XLF", "SELL", price, size, conn, id_to_item_before_ack);
+        add_request(global_id, "XLF", "SELL", price, size, conn, id_to_item_before_ack, outstanding_inventory);
         cout << " SELL XLF" << "\n";
       }
     }
@@ -626,7 +706,7 @@ main_loop (Connection conn) {
       if(inventory[XLF] > 90) {spread = 50;}*/
       if (price < XLF_estimate - spread) {
 
-        add_request(global_id, "XLF", "BUY", price, size, conn, id_to_item_before_ack);
+        add_request(global_id, "XLF", "BUY", price, size, conn, id_to_item_before_ack, outstanding_inventory);
         cout << " BUY XLF" << " " << price << " " << size << endl;
       }
     }
@@ -642,7 +722,7 @@ main_loop (Connection conn) {
       int spread = 10;
       if(inventory[VALE] < -7) {spread = 20;}
       if (VALBZ_avg != -1 && price > VALBZ_avg + spread) {
-        add_request(global_id, "VALE", "SELL", price, size, conn, id_to_item_before_ack);
+        add_request(global_id, "VALE", "SELL", price, size, conn, id_to_item_before_ack,outstanding_inventory);
         cout << " SELL VALE" << "\n";
       }
     }
@@ -653,7 +733,7 @@ main_loop (Connection conn) {
       int spread = 10;
       if(inventory[VALE] > 7) {spread = 20;}
       if (VALBZ_avg != -1 && price < VALBZ_avg - spread) {
-        add_request(global_id, "VALE", "BUY", price, size, conn, id_to_item_before_ack);
+        add_request(global_id, "VALE", "BUY", price, size, conn, id_to_item_before_ack, outstanding_inventory);
         cout << " BUY VALE" << " " << price << " " << size << endl;
       }
     }
